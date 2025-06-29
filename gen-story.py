@@ -187,7 +187,7 @@ def setup_google_api():
     credentials = None
     try:
         credentials = service_account.Credentials.from_service_account_info(
-            json.loads(st.secrets["GCP_SERVICE_ACCOUNT"]), scopes=['https://www.googleapis.com/auth/drive']
+            st.secrets["GCP_SERVICE_ACCOUNT"], scopes=['https://www.googleapis.com/auth/drive']
         )
     except Exception: # Fall back to local service account file
         SERVICE_ACCOUNT_FILE = 'D:/PROJECT/Cupertino/CSTU_Startup_Google_Service_Account.json'
