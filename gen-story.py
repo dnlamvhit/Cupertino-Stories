@@ -29,6 +29,7 @@ from googleapiclient.discovery import build
 from google.oauth2 import service_account
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import google.generativeai as Ggenai
+import json
 import soundfile as sf
 import numpy as np
 from PIL import Image
@@ -186,7 +187,7 @@ def setup_google_api():
     credentials = None
     try:
         credentials = service_account.Credentials.from_service_account_info(
-            st.secrets["GCP_SERVICE_ACCOUNT"], scopes=['https://www.googleapis.com/auth/drive']
+            json.loads(st.secrets["GCP_SERVICE_ACCOUNT"]), scopes=['https://www.googleapis.com/auth/drive']
         )
     except Exception: # Fall back to local service account file
         SERVICE_ACCOUNT_FILE = 'D:/PROJECT/Cupertino/CSTU_Startup_Google_Service_Account.json'
