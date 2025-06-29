@@ -121,7 +121,8 @@ if 'google_drive_service' not in st.session_state:
 if 'save_action' not in st.session_state:
     st.session_state.save_action = None
 if 'story_root_folder' not in st.session_state:
-    st.session_state.story_root_folder = {'id': '1J1QRN0CFaaNpbhTheGyU5h_vYFK-5SpM', 'name': 'MyDrive/PROJECTS'}
+    st.session_state.story_root_folder = {'id': '1Ld99r4U7x--wdnNgfoPNC67Z6yaqN_A2', 'name': 'MyDrive/Cupertino Stories/AI App that Generate Story from Multiple Files'}
+    # st.session_state.story_root_folder = {'id': '1J1QRN0CFaaNpbhTheGyU5h_vYFK-5SpM', 'name': 'MyDrive/PROJECTS'}
 if "story_revision_instruction" not in st.session_state:
     st.session_state["story_revision_instruction"] = ""
 temp = """
