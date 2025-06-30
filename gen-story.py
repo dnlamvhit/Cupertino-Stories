@@ -956,12 +956,13 @@ def google_drive_browser():
 
 @run_async
 async def main():
-    hide_github_icon = """
+    hide_menu_style = """
         <style>
-        #GithubIcon {visibility: hidden;}
+        #MainMenu {visibility: hidden;}
         </style>
     """
-    st.markdown(hide_github_icon, unsafe_allow_html=True)
+    st.markdown(hide_menu_style, unsafe_allow_html=True)
+
     # Add error handling for torch path issues
     init_pytorch()
     # Make sure APIs are set up
