@@ -24,7 +24,8 @@ from concurrent.futures import ThreadPoolExecutor
 # Third-party imports
 import nest_asyncio
 import streamlit as st
-import markdown
+import markdown 
+# from html2docx import html2docx # Only use function html2docx
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
@@ -35,12 +36,17 @@ import numpy as np
 from PIL import Image
 import fitz  # PyMuPDF
 import docx
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from docx.shared import Pt
+from docx.oxml.ns import qn
+import pptx
 from dotenv import load_dotenv
 import aiofiles
 from bs4 import BeautifulSoup
 import torch
 from googleapiclient.errors import HttpError
 import time
+import re
 import socket
 import ssl
 import markdownify
@@ -176,22 +182,6 @@ def get_drive_folder_name_by_id(folder_id):
         return ''
     
 # Initialize all session state variables
-if 'story_content' not in st.session_state:
-    st.session_state.story_content = ""
-if 'story_file_stem' not in st.session_state:
-    st.session_state.story_file_stem = ""
-if 'drive_folder_history' not in st.session_state:
-    st.session_state.drive_folder_history = ['root']
-if 'drive_folder_names' not in st.session_state:
-    st.session_state.drive_folder_names = {'root': 'GOOGLE DRIVE'}
-if 'current_folder_files' not in st.session_state:
-    st.session_state.current_folder_files = None    
-if 'source_folder' not in st.session_state:
-    st.session_state.source_folder = None
-if 'progress_history' not in st.session_state:
-    st.session_state.progress_history = []
-if 'progress_value' not in st.session_state:
-    st.session_state.progress_value = 0
 if 'llm' not in st.session_state:
     st.session_state.llm = None
 if 'google_drive_service' not in st.session_state:
@@ -201,12 +191,28 @@ if 'save_action' not in st.session_state:
 # Ensure Google API is set up before using get_drive_folder_name_by_id
 if not st.session_state.llm or not st.session_state.google_drive_service:
     setup_google_api()    
-if 'story_root_folder' not in st.session_state:
-    folder_id = '1Ld99r4U7x--wdnNgfoPNC67Z6yaqN_A2'
+if 'story_content' not in st.session_state:
+    st.session_state.story_content = ""
+if 'story_file_stem' not in st.session_state:
+    st.session_state.story_file_stem = ""
+if 'source_story_root_folder' not in st.session_state:
+    st.session_state.source_story_root_folder = {'id': '1fddGiZ4m6m5Gd6_cW9OPr-n01DsPOHEg', 'name': 'Cupertino Stories'}
+if 'drive_folder_history' not in st.session_state:
+    st.session_state.drive_folder_history = [{'id': 'root', 'name': 'GOOGLE DRIVE'}, {'id': st.session_state.source_story_root_folder['id'], 'name': st.session_state.source_story_root_folder['name']}]
+if 'current_folder_files' not in st.session_state:
+    st.session_state.current_folder_files = None    
+if 'generated_story_root_folder' not in st.session_state:
+    folder_id = '1Ld99r4U7x--wdnNgfoPNC67Z6yaqN_A2' # Folder in Google Drive: AI App-Generated Stories
     folder_name = get_drive_folder_name_by_id(folder_id)
-    st.session_state.story_root_folder = {'id': folder_id, 'name': folder_name}    
+    st.session_state.generated_story_root_folder = {'id': folder_id, 'name': folder_name}   
     # st.session_state.story_root_folder = {'id': '1Ld99r4U7x--wdnNgfoPNC67Z6yaqN_A2', 'name': 'MyDrive/Cupertino Stories/AI App that Generate Story from Multiple Files'}
     # st.session_state.story_root_folder = {'id': '1J1QRN0CFaaNpbhTheGyU5h_vYFK-5SpM', 'name': 'MyDrive/PROJECTS'}
+# if 'source_folder' not in st.session_state:
+    # st.session_state.source_folder = None
+if 'progress_history' not in st.session_state:
+    st.session_state.progress_history = []
+if 'progress_value' not in st.session_state:
+    st.session_state.progress_value = 0
 if "story_revision_instruction" not in st.session_state:
     st.session_state["story_revision_instruction"] = ""
 temp = """
@@ -320,7 +326,7 @@ def extract_content(file_data, file_meta=None):
         file_meta: Dictionary containing file metadata (name, mimeType, etc.)
     """
     file_content_list = []
-    
+
     # Get file information
     if isinstance(file_data, str):  # Local file path
         file_name = os.path.basename(file_data)
@@ -330,8 +336,22 @@ def extract_content(file_data, file_meta=None):
         file_name = file_meta.get('name', 'unknown')
         file_path = None
         is_memory_file = True
-    
-    try:        
+
+    try:
+        # Special handling: if file is a Google Doc, treat as docx
+        if file_meta and file_meta.get('mimeType', '') == 'application/vnd.google-apps.document':
+            try:
+                doc = docx.Document(file_data)
+                for paragraph in doc.paragraphs:
+                    text = paragraph.text.strip()
+                    if text:
+                        file_content_list.append({"text": text})
+                        update_progress(f"Content extracted successfully from '{file_name}' (Google Doc)")
+                doc = None
+            except Exception as e:
+                update_progress(f"Error processing Google Doc '{file_name}' due to: {str(e)}")
+            return file_content_list
+        
         if file_name.lower().endswith((".mp4", ".avi", ".mov", ".mp3", ".wav")): # Handle media files
             _, whisper = import_media_libs()  # Get whisper from lazy import
             if file_name.lower().endswith((".mp4", ".avi", ".mov")): # Convert video to audio
@@ -484,6 +504,27 @@ def extract_content(file_data, file_meta=None):
                 #    update_progress(f"No content found in {file_name}")                    
             except Exception as e:
                 update_progress(f"Error processing text file '{file_name}' due to: {str(e)}")
+
+        # Handle PowerPoint files (.ppt, .pptx)
+        elif file_name.lower().endswith(('.ppt', '.pptx')):
+            try:
+                if is_memory_file:
+                    ppt = pptx.Presentation(file_data)
+                else:
+                    ppt = pptx.Presentation(file_path)
+                for slide_num, slide in enumerate(ppt.slides, 1):
+                    slide_text = []
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text"):
+                            text = shape.text.strip()
+                            if text:
+                                slide_text.append(text)
+                    if slide_text:
+                        file_content_list.append({"text": f"[Slide {slide_num}] " + "\n".join(slide_text)})
+                update_progress(f"Content extracted successfully from PowerPoint '{file_name}'")
+            except Exception as e:
+                update_progress(f"Error processing PowerPoint file '{file_name}' due to: {str(e)}")
+            return file_content_list        
         else:
             update_progress(f"Unsupported file format for: '{file_name}'")        
         return file_content_list        
@@ -538,18 +579,64 @@ def check_file_exists_in_drive(folder_id, filename):
         update_progress(f"Error checking file existence: {str(e)}")
         return None
 
+def markdown_to_docx(md_text, doc):
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = 'Arial'
+    font.size = Pt(10)
+    # For compatibility with some Word versions
+    style.element.rPr.rFonts.set(qn('w:eastAsia'), 'Arial')
+    lines = md_text.splitlines()
+
+    for line in lines:
+        line = line.strip()
+        if line.startswith('# '):
+            h = doc.add_heading(line[2:].strip(), level=1)
+            h.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+            run = h.runs[0]
+            run.font.name = 'Arial'
+            run.font.size = Pt(15)
+            run.bold = True
+            h.style.font.name = 'Arial'
+            h.style.font.size = Pt(15)
+        elif line.startswith('## '):
+            h = doc.add_heading(line[3:].strip(), level=2)
+            h.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+            run = h.runs[0]
+            run.font.name = 'Arial'
+            run.font.size = Pt(12)
+            run.bold = True
+            h.style.font.name = 'Arial'
+            h.style.font.size = Pt(12)
+        elif line.startswith('### '):
+            h = doc.add_heading(line[4:].strip(), level=3)
+            h.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+            run = h.runs[0]
+            run.font.name = 'Arial'
+            run.font.size = Pt(11)
+            run.bold = True
+            h.style.font.name = 'Arial'
+            h.style.font.size = Pt(11)
+        elif line:
+            para = doc.add_paragraph(line)
+            para.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
+            for run in para.runs:
+                run.font.name = 'Arial'
+                run.font.size = Pt(10)
+
 def save_story_to_google_drive():
     if st.session_state.google_drive_service:
-        try: # Use drive_folder_history and drive_folder_names to get story_folder_name
-            current_folder_id = st.session_state.drive_folder_history[-1]
-            story_folder_name = st.session_state.drive_folder_names.get(current_folder_id, 'Unknown Folder')
-            story_folder_id = create_or_get_drive_folder(st.session_state.story_root_folder['id'], story_folder_name)
+        try: # Use drive_folder_history to get story_folder_name
+            current_folder = st.session_state.drive_folder_history[-1]
+            current_folder_id = current_folder['id']
+            story_folder_name = current_folder['name']
+            story_folder_id = create_or_get_drive_folder(st.session_state.generated_story_root_folder['id'], story_folder_name)
             if st.session_state.save_action is None:
-                txt_exists = check_file_exists_in_drive(story_folder_id, os.path.basename(st.session_state.story_file_stem) + '.txt')
+                docx_exists = check_file_exists_in_drive(story_folder_id, os.path.basename(st.session_state.story_file_stem) + '.docx')
                 html_exists = check_file_exists_in_drive(story_folder_id, os.path.basename(st.session_state.story_file_stem) + '.html')
-                if txt_exists or html_exists:
+                if docx_exists or html_exists: 
                     st.session_state.overwrite_confirm_needed = True
-                    st.session_state.existing_txt_file_id = txt_exists
+                    st.session_state.existing_txt_file_id = docx_exists
                     st.session_state.existing_html_file_id = html_exists
                     return
                 else:
@@ -562,19 +649,31 @@ def save_story_to_google_drive():
                 else: 
                     unique_suffix = ''
                 st.session_state.story_file_stem = st.session_state.story_file_stem + unique_suffix
-                txt_metadata = {
-                    'name': f"{st.session_state.story_file_stem}.txt",
+                # Save as .docx instead of .txt
+                # md_text = st.session_state.story_content
+                # html_body = markdown2.markdown(md_text)
+                # Fallback: ensure at least <p> or <h> tags for html2docx
+                # if '<p>' not in html_body and '<h' not in html_body:
+                #    html_body = ''.join(f'<p>{line}</p>' for line in md_text.splitlines() if line.strip())
+                doc = docx.Document()
+                markdown_to_docx(st.session_state.story_content, doc)
+                # html2docx(html_body, doc)         
+                docx_buffer = io.BytesIO()
+                doc.save(docx_buffer)
+                docx_buffer.seek(0)
+                docx_metadata = {
+                    'name': f"{st.session_state.story_file_stem}.docx",
                     'parents': [story_folder_id],
-                    'mimeType': 'text/plain'
+                    'mimeType': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
                 }
-                txt_media = MediaIoBaseUpload(
-                    io.BytesIO(st.session_state.story_content.encode('utf-8')),
-                    mimetype='text/plain',
+                docx_media = MediaIoBaseUpload(
+                    docx_buffer,
+                    mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                     resumable=True
                 )
                 st.session_state.google_drive_service.files().create(
-                    body=txt_metadata,
-                    media_body=txt_media,
+                    body=docx_metadata,
+                    media_body=docx_media,
                     fields='id'
                 ).execute()
                 html_metadata = {
@@ -594,18 +693,23 @@ def save_story_to_google_drive():
                 ).execute()
 
             if st.session_state.save_action == 'overwrite':
-                txt_file_id = st.session_state.get("existing_txt_file_id")
+                docx_file_id = st.session_state.get("existing_txt_file_id")  # Now used for .docx
                 html_file_id = st.session_state.get("existing_html_file_id")
-                # Overwrite .txt
-                if txt_file_id:
-                    txt_media = MediaIoBaseUpload(
-                        io.BytesIO(st.session_state.story_content.encode('utf-8')),
-                        mimetype='text/plain',
+                # Overwrite .docx
+                if docx_file_id:
+                    doc = docx.Document()
+                    markdown_to_docx(st.session_state.story_content, doc)
+                    docx_buffer = io.BytesIO()
+                    doc.save(docx_buffer)
+                    docx_buffer.seek(0)
+                    docx_media = MediaIoBaseUpload(
+                        docx_buffer,
+                        mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                         resumable=True
                     )
                     st.session_state.google_drive_service.files().update(
-                        fileId=txt_file_id,
-                        media_body=txt_media
+                        fileId=docx_file_id,
+                        media_body=docx_media
                     ).execute()
                 # Overwrite .html
                 if html_file_id:
@@ -618,7 +722,7 @@ def save_story_to_google_drive():
                         fileId=html_file_id,
                         media_body=html_media
                     ).execute()            
-            update_progress(f"Story saved as '{st.session_state.story_file_stem}.txt' and '{st.session_state.story_file_stem}.html' in '{st.session_state.story_root_folder['name']}'/'{story_folder_name}' folder.")
+            update_progress(f"Story saved as '{st.session_state.story_file_stem}.docx' and '{st.session_state.story_file_stem}.html' in '{st.session_state.generated_story_root_folder['name']}'/'{story_folder_name}' folder.")
             st.session_state.current_folder_files = None  # Reset current folder files to force reload file list      
         except Exception as e:
             update_progress(f"Error saving to Google Drive: {str(e)}")
@@ -633,9 +737,9 @@ def story_html_format():
         <head>
             <style>
                 body {{font-family: Arial, sans-serif; font-size: 10; margin: 10px; text-align: justify; padding: 0;}}
-                h1 {{font-family: Arial, sans-serif; font-size: 13pt; text-align: center; font-weight: bold;}}
-                h2 {{font-family: Arial, sans-serif; font-size: 11pt; text-align: justify; font-weight: bold;}}
-                h3 {{font-family: Arial, sans-serif; font-size: 10pt; text-align: justify; font-weight: bold;}}
+                h1 {{font-family: Arial, sans-serif; font-size: 15pt; text-align: center; font-weight: bold;}}
+                h2 {{font-family: Arial, sans-serif; font-size: 12pt; text-align: justify; font-weight: bold;}}
+                h3 {{font-family: Arial, sans-serif; font-size: 11pt; text-align: justify; font-weight: bold;}}
             </style>
         </head>
         <body>
@@ -655,7 +759,7 @@ async def generate_story(file_content_list):
     selected_file_names = ', '.join(selected_file_names)      
     prompt = ("Generate story content without mentioning this prompt in English then Chinese but never interleaved. " 
               "The structure must follow: title in heading 1, Authors (heading 2): include author, interviewer or organization name and contact info if available (body text), "
-              "Category (heading 2): If the generated story is related to Cupertino, select one or more categories from: Education, Community, Environment, Government, Business, or Safety (body text). Else set category to 'Not related to Cupertino' "
+              "Category (heading 2): If the generated story is related to Cupertino, select one or more categories from: Education, Community, Environment, Government, Business, or Safety (body text). Else set category to 'Unrelated to Cupertino' "
               "Summary (heading 2): include what story is about (body text), Full Story (heading 2): complete story formatted for easy reading. The data source is below:")
     try:       
         response = await asyncio.to_thread(st.session_state.llm.generate_content, [prompt] + file_content_list)
@@ -724,20 +828,46 @@ hidden ="""
 
 def download_google_drive_file(file_id): #"""Download a file from Google Drive and return its content as a BytesIO object"""
     try:
-        request = st.session_state.google_drive_service.files().get_media(fileId=file_id)
-        file_content = io.BytesIO()
-        downloader = MediaIoBaseDownload(file_content, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        file_content.seek(0)
-        return file_content
+        # Get file metadata to check mimeType
+        file_meta = st.session_state.google_drive_service.files().get(fileId=file_id, fields="name, mimeType").execute()
+        file_name = file_meta.get("name", file_id)
+        mime_type = file_meta.get("mimeType", "")
+        # If Google Docs file, use export_media
+        if mime_type == "application/vnd.google-apps.document":
+            # Export as docx (preferred for further processing)
+            export_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            try:
+                request = st.session_state.google_drive_service.files().export_media(fileId=file_id, mimeType=export_mime)
+                file_content = io.BytesIO()
+                downloader = MediaIoBaseDownload(file_content, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                file_content.seek(0)
+                # Patch file_meta to reflect .docx for downstream processing
+                file_meta["name"] = file_name + ".docx" if not file_name.lower().endswith(".docx") else file_name
+                return file_content
+            except Exception as e:
+                update_progress(f"Error exporting Google Doc {file_name} as docx: {str(e)}")
+                return None
+        else:
+            # For all other files, use get_media as before
+            request = st.session_state.google_drive_service.files().get_media(fileId=file_id)
+            file_content = io.BytesIO()
+            downloader = MediaIoBaseDownload(file_content, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            file_content.seek(0)
+            return file_content
     except Exception as e:
         try:
-            file_meta = st.session_state.google_drive_service.files().get(fileId=file_id, fields="name").execute()
-            file_name = file_meta.get("name", file_id)
+            # Try to get file name for error reporting
+            if 'file_name' not in locals():
+                file_meta = st.session_state.google_drive_service.files().get(fileId=file_id, fields="name").execute()
+                file_name = file_meta.get("name", file_id)
         except Exception:
-            pass        
+            file_name = file_id
         update_progress(f"Error downloading file {file_name} due to: {str(e)}")
         return None
 
@@ -765,7 +895,12 @@ def list_google_drive_files(parent_id='root'):
             if files:
                 return sorted(files, key=lambda x: (x['mimeType'] != 'application/vnd.google-apps.folder', x['name'].lower()))
             else:
-                folder_name = st.session_state.drive_folder_names.get(parent_id, parent_id)
+                # Try to get folder name from drive_folder_history
+                folder_name = parent_id
+                for folder in reversed(st.session_state.drive_folder_history):
+                    if folder['id'] == parent_id:
+                        folder_name = folder['name']
+                        break
                 update_progress(f"No files found in folder '{folder_name}'")
                 return []
         except (ssl.SSLError, socket.error, HttpError) as e:
@@ -796,19 +931,31 @@ def google_drive_browser():
     st.session_state.folder_nav_in_progress = False
     try:
         # Use cached files if available, otherwise fetch new ones
-        current_folder_id = st.session_state.drive_folder_history[-1]
+        current_folder = st.session_state.drive_folder_history[-1]
+        current_folder_id = current_folder['id']
         if st.session_state.current_folder_files is None:
             st.session_state.current_folder_files = list_google_drive_files(current_folder_id)
         files = st.session_state.current_folder_files
         if 'folder_nav_in_progress' not in st.session_state:
             st.session_state.folder_nav_in_progress = False
         with st.sidebar:
+            # Back button if not in root
+            if len(st.session_state.drive_folder_history) > 1:                
+                if st.button("⬅️**Back to Previous Path**", disabled=st.session_state.folder_nav_in_progress):
+                    st.session_state.folder_nav_in_progress = True
+                    st.session_state.drive_folder_history.pop()
+                    st.session_state.current_folder_files = None
+                    time.sleep(0.5)  # Debounce rapid clicks
+                    st.session_state.folder_nav_in_progress = False  # Ensure re-enable before rerun
+                    st.rerun()                  
             # Label and buttons for parent folders (excluding current folder)
             if len(st.session_state.drive_folder_history) > 1:
                 st.markdown("**Parent Folders:**")
-                for idx, folder_id in enumerate(st.session_state.drive_folder_history[:-1]):
-                    folder_name = st.session_state.drive_folder_names.get(folder_id, 'Unknown Folder')
-                    if st.button(f"📁 {folder_name}", key=f"parent_folder_{folder_id}", help=f"Go to {folder_name}"):
+                for idx, folder in enumerate(st.session_state.drive_folder_history[:-1]):
+                    folder_id = folder['id']
+                    folder_name = folder['name']
+                    # if st.button(f"📁 {folder_name}", key=f"parent_folder_{folder_id}", help=f"Go to {folder_name}"):
+                    if st.checkbox(f"📁 {folder_name}", key=f"parent_folder_{folder_id}", help=f"Go to {folder_name}"):
                         st.session_state.drive_folder_history = st.session_state.drive_folder_history[:idx+1]
                         st.session_state.current_folder_files = None
                         # st.session_state.selected_files = []
@@ -820,24 +967,18 @@ def google_drive_browser():
                         st.rerun()
 
             # Current path as plain text
-            path_names = [st.session_state.drive_folder_names.get(folder_id, 'Unknown Folder') for folder_id in st.session_state.drive_folder_history]
-            st.markdown(f"**Current folder path:** {' > '.join(path_names)}")
-
+            path_names = [folder['name'] for folder in st.session_state.drive_folder_history]
+            st.markdown(f"**Current Folder:** {' > '.join(path_names)}")
             # Label for child folder
-            # st.markdown("**Child Folders and FIles:**")
-            # No button for current folder
-            if not files:
-                st.info("No files found in this folder!")
-            # Split into folders and regular files
+            st.markdown("**Child Folders and Files:**")            
             folders = [f for f in files if f['mimeType'] == 'application/vnd.google-apps.folder']
-            regular_files = [f for f in files if f['mimeType'] != 'application/vnd.google-apps.folder']
             if folders:
                 for folder in sorted(folders, key=lambda x: x['name'].lower()):
                     folder_name = folder['name']
-                    if st.button(f"📁 {folder_name}", key=f"folder_{folder['id']}", help="Click to open folder", disabled=st.session_state.folder_nav_in_progress):
+                    folder_id = folder['id']
+                    if st.checkbox(f"📁 {folder_name}", key=f"folder_{folder_id}", help="Click to open folder", disabled=st.session_state.folder_nav_in_progress):
                         st.session_state.folder_nav_in_progress = True
-                        st.session_state.drive_folder_history.append(folder['id'])
-                        st.session_state.drive_folder_names[folder['id']] = folder_name
+                        st.session_state.drive_folder_history.append({'id': folder_id, 'name': folder_name})
                         st.session_state.current_folder_files = None
                         # st.session_state.selected_files = []
                         st.session_state.delete_confirm_needed = False
@@ -846,13 +987,29 @@ def google_drive_browser():
                         time.sleep(0.5)  # Debounce rapid clicks
                         st.session_state.folder_nav_in_progress = False  # Ensure re-enable before rerun
                         st.rerun()
+            if not files:
+                st.info("No files found in current folder!")                      
+            regular_files = [f for f in files if f['mimeType'] != 'application/vnd.google-apps.folder']
             # Show files with checkboxes            
-            st.session_state.selected_files = []
+            all_file_ids = [file['id'] for file in regular_files]
+            checked_file_ids = [fid for fid in all_file_ids if st.session_state.get(f"check_{fid}", False)]
+            all_selected = len(regular_files) > 0 and len(checked_file_ids) == len(regular_files)
+            select_all = st.checkbox("**Select All Files**", 
+                value=all_selected,
+                key="select_all_files_in_folder", 
+                help="Click to select all following files in the current folder")
+            if select_all and not all_selected:
+                for file in regular_files:
+                    st.session_state[f"check_{file['id']}"] = True
+            elif not select_all and all_selected:
+                for file in regular_files:
+                    st.session_state[f"check_{file['id']}"] = False    
             # If html file is selected, update checkbox states before rendering
             # if 'selected_html_file_id' in st.session_state:
             #    for f in regular_files:
             #        st.session_state[f"check_{f['id']}"] = (f['id'] == st.session_state.selected_html_file_id)
             #    del st.session_state['selected_html_file_id'] # Clear html_file_id flag
+            st.session_state.selected_files = []
             if regular_files:
                 for file in sorted(regular_files, key=lambda x: x['name'].lower()):
                     mime = file.get('mimeType', 'unknown')
@@ -863,6 +1020,8 @@ def google_drive_browser():
                         icon = "📕"
                     elif 'document' in mime:
                         icon = "📄"
+                    elif 'presentation' in mime or 'powerpoint' in mime:
+                        icon = "🖥️"
                     elif 'audio' in mime:
                         icon = "🎧"
                     elif 'video' in mime:
@@ -870,7 +1029,7 @@ def google_drive_browser():
                     elif 'html' in mime:
                         icon = "🌐"
                     elif 'spreadsheet' in mime or 'excel' in mime:
-                        icon = "📊"                        
+                        icon = "📈"                        
                     file_size = int(file.get('size', 0))
                     if file_size >= 1024**3:
                         file_size = f"{round(file_size / 1024**3, 1)} GB"
@@ -881,9 +1040,9 @@ def google_drive_browser():
                     else:
                         file_size = f"{file_size} B"
 
-                    col1, col2, col3 = st.columns([1, 50, 6])
+                    col1, col2, col3 = st.columns([2, 50, 6])
                     with col1:
-                        file_selected = st.checkbox("  ", key=f"check_{file['id']}")
+                        file_selected = st.checkbox(" ", key=f"check_{file['id']}")
                     with col2:
                         file_url = f"https://drive.google.com/file/d/{file['id']}/view"
                         st.markdown(f"""
@@ -923,9 +1082,9 @@ def google_drive_browser():
 
                 # Overwrite/Skip confirmation UI
                 if st.session_state.get('overwrite_confirm_needed', False):
-                    current_folder_id = st.session_state.drive_folder_history[-1]
-                    story_folder_name = st.session_state.drive_folder_names.get(current_folder_id, '')
-                    st.warning(f"Story files '{st.session_state.story_file_stem}.txt|html' already exist in '{st.session_state.story_root_folder['name']}'/'{story_folder_name}'")
+                    current_folder = st.session_state.drive_folder_history[-1]
+                    story_folder_name = current_folder['name']
+                    st.warning(f"Story files '{st.session_state.story_file_stem}.docx|html' already exist in '{st.session_state.generated_story_root_folder['name']}'/'{story_folder_name}'")
                     options = {
                         "💾Overwrite File": "overwrite",
                         "➕Save with Stamp": "save_with_timestamp",
@@ -954,7 +1113,7 @@ def google_drive_browser():
                             update_progress(f"Skipped saving story file '{st.session_state.story_file_stem}'")
                             st.rerun()
                 # Delete confirmation UI
-                temp="""if "delete_confirm_needed" not in st.session_state:
+                temp = """if "delete_confirm_needed" not in st.session_state:
                     st.session_state.delete_confirm_needed = False                
                 if st.button("🗑️**Delete Selected Files**", key="delete_files"):
                     st.session_state.delete_confirm_needed = True
@@ -962,11 +1121,11 @@ def google_drive_browser():
                     st.warning("Are you sure to delete selected files?")
                     col_yes, col_no = st.columns(2)
                     with col_yes:
+                        user_input = st.text_input("Enter authorization code to delete selected files:", type="password")
                         if st.button("Yes, Delete", key="yes_delete"):
-                            today = datetime.now()
-                            secret_code = f"{today.day:02d}{today.month:02d}"
-                            user_input = st.text_input("Enter authorization code to delete selected files:", type="password")
-                            if user_input == secret_code: 
+                            # today = datetime.now()
+                            secret_code = '2025' # f"{today.day:02d}{today.month:02d}"
+                            if user_input == secret_code and user_input != "": 
                                 try:
                                     for file in list(st.session_state.selected_files): # Use a copy to avoid modifying list during iteration
                                         st.session_state.google_drive_service.files().delete(fileId=file['id']).execute()                                      
@@ -977,7 +1136,7 @@ def google_drive_browser():
                                 st.session_state.current_folder_files = None  # Reset to refresh the list
                                 st.session_state.selected_files = []
                                 st.rerun()  # Force rerun to reset checkboxes
-                            else:
+                            elif user_input != "":
                                 st.error("❌ You are not authorized to delete selected files!")
                     with col_no:
                         if st.button("No, Cancel", key="no_delete"):
@@ -1023,8 +1182,8 @@ async def main():
         st.markdown("<font color='darkblue'><b><p style='font-size: 20px; text-align: center; '>GENERATE CUPERTINO STORIES</p></b></font>", unsafe_allow_html=True)
         st.markdown("---")
   
-        st.header("File Source")
-        source = st.radio("Browse files from:", options=["Google Drive", "Local Drive"])         
+        #st.header("")
+        source = st.radio(label="**Browse Files from:**", options=["Google Drive", "Local Drive"], help="Select source to browse files",)         
         if source == "Local Drive":
             uploaded_files = st.file_uploader("Choose files to process", accept_multiple_files=True,
                 type=['txt', 'pdf', 'docx', 'doc', 'mp3', 'mp4', 'wav', 'avi', 'mov', 'jpg', 'jpeg', 'png']
@@ -1037,7 +1196,7 @@ async def main():
                         "size": uploaded_file.size
                         }
         else:  # Google Drive
-            if st.button("🔄**REFRESH BROWSER**", help =  'Click to refresh Google Drive browser for updates', key="refresh_browser"): 
+            if st.button("🔄**Refresh Browser**", help =  'Click to refresh Google Drive browser for updates', key="refresh_browser"): 
                 # st.session_state.drive_folder_history = ['root']
                 # st.session_state.drive_folder_names = {'root': 'GOOGLE DRIVE'}
                 st.session_state.current_folder_files = None
@@ -1045,20 +1204,45 @@ async def main():
                 st.session_state.delete_confirm_needed = False
                 st.session_state.overwrite_confirm_needed = False
                 st.session_state.save_action = None
+            if st.button("➡️📂**Main Folder for AI-Genenrated Stories**", key="goto_story_root_folder", help="Go to the AI-generated story folder"):
+                    st.session_state.drive_folder_history = [
+                        {'id': 'root', 'name': 'GOOGLE DRIVE'},
+                        {'id': st.session_state.source_story_root_folder['id'], 'name': st.session_state.source_story_root_folder['name']},                     
+                        {'id': st.session_state.generated_story_root_folder['id'], 'name': st.session_state.generated_story_root_folder['name']}]
+                    st.session_state.current_folder_files = None
+                    st.session_state.selected_files = []
+                    st.session_state.delete_confirm_needed = False
+                    st.session_state.overwrite_confirm_needed = False
+                    st.session_state.save_action = None
+                    st.rerun()                
             google_drive_browser()
-        st.header("FILE PROCESS HISTORY")
+        #st.header("")
+
+        st.header("PROCESS HISTORY")
         for message in st.session_state.progress_history:
             st.text(message)        
         # Progress Bar
         if st.session_state.progress_value > 0:
             st.progress(st.session_state.progress_value / 100)
 
+
     # Main content area - show story tabs
     if st.session_state.story_content: 
-        tabs = st.tabs(["👁️**STORY VIEWER**", "📝**MANUAL STORY EDITOR**", "🤖**AI STORY EDITOR**📝"])
+        tabs = st.tabs(["👁️**STORY VIEWER**", "🤖📝**AI STORY EDITOR**", "📝**MANUAL STORY EDITOR**"])
         with tabs[0]:
-            if st.download_button("⬇️ DOWNLOAD", data=story_html_format(), file_name="story.html", mime="text/html"):
-                    pass
+            col_html, col_docx = st.columns(2)
+            with col_html:
+                st.download_button("⬇️ DOWNLOAD STORY IN HTML FORMAT", data=story_html_format(),
+                    file_name="story.html", mime="text/html")
+            with col_docx:
+                doc = docx.Document()
+                markdown_to_docx(st.session_state.story_content, doc)
+                docx_buffer = io.BytesIO()
+                doc.save(docx_buffer)
+                docx_buffer.seek(0)
+                st.download_button("⬇️ DOWNLOAD STORY IN DOCX FORMAT", data=docx_buffer.getvalue(),
+                    file_name="story.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
             # Inject custom CSS to match HTML font in Story Viewer
             st.markdown("""
                 <style>
@@ -1071,19 +1255,19 @@ async def main():
                     }
                     .story-viewer-body h1 {
                         font-family: Arial, sans-serif !important;
-                        font-size: 13pt !important;
+                        font-size: 15pt !important;
                         text-align: center !important;
                         font-weight: bold !important;
                     }
                     .story-viewer-body h2 {
                         font-family: Arial, sans-serif !important;
-                        font-size: 11pt !important;
+                        font-size: 12pt !important;
                         text-align: justify !important;
                         font-weight: bold !important;
                     }
                     .story-viewer-body h3 {
                         font-family: Arial, sans-serif !important;
-                        font-size: 10pt !important;
+                        font-size: 11pt !important;
                         text-align: justify !important;
                         font-weight: bold !important;
                     }
@@ -1091,7 +1275,31 @@ async def main():
             """, unsafe_allow_html=True)
             # Wrap the story HTML in a div for CSS targeting
             st.markdown(f'<div class="story-viewer-body">{story_html_format()}</div>', unsafe_allow_html=True)
+
         with tabs[1]:
+            st.text_area(
+                "**ENTER YOUR INSTRUCTION TO REVISE THE CURRENT STORY WITH AI**:",
+                height=300,
+                key="story_revision_instruction",
+                value=st.session_state.get("story_revision_instruction", ""))            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔄**REVISE STORY**📝", key="revise_story_btn"):
+                    if not st.session_state.story_content:
+                        st.warning("No story content to revise!")
+                    else:
+                        with st.spinner("Revising story with AI is in progress ..."):
+                            try:
+                                revise_story()
+                            except Exception as e:
+                                st.error(f"Error generating story: {str(e)}")
+            with col2: 
+                if st.button("💾**SAVE REVISED STORY**", help ="Click to save revised story"):        
+                    try: 
+                        save_story_to_google_drive() 
+                    except Exception as e:
+                        st.error(f"Error saving revised story: {str(e)}") 
+        with tabs[2]:
             soup = BeautifulSoup(story_html_format(), "html.parser")
             edited_texts = {} #store edited text
             tag_counter = {} # Track position-based identifiers for each tag
@@ -1119,27 +1327,5 @@ async def main():
                         save_story_to_google_drive() 
                     except Exception as e:
                         st.error(f"Error saving changes: {str(e)}")
-        with tabs[2]:
-            st.text_area(
-                "**ENTER YOUR INSTRUCTION TO REVISE THE CURRENT STORY WITH AI**:",
-                key="story_revision_instruction",
-                value=st.session_state.get("story_revision_instruction", ""))            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("🔄**REVISE STORY**📝", key="revise_story_btn"):
-                    if not st.session_state.story_content:
-                        st.warning("No story content to revise!")
-                    else:
-                        with st.spinner("Revising story with AI is in progress ..."):
-                            try:
-                                revise_story()
-                            except Exception as e:
-                                st.error(f"Error generating story: {str(e)}")
-            with col2: 
-                if st.button("💾**SAVE REVISED STORY**", help ="Click to save revised story"):        
-                    try: 
-                        save_story_to_google_drive() 
-                    except Exception as e:
-                        st.error(f"Error saving revised story: {str(e)}") 
 if __name__ == "__main__":
     main()

@@ -14,6 +14,7 @@ pillow
 PyMuPDF
 python-docx
 python-dotenv
+python-pptx
 resampy
 soundfile
 streamlit
