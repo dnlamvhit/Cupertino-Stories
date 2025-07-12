@@ -1,5 +1,9 @@
 # streamlit run gen-story.py --logger.level error
 # streamlit run gen-story.py --server.fileWatcherType=none
+# 
+# File type detection uses built-in Python libraries and file signatures
+# No additional dependencies required for Streamlit Cloud deployment
+#
 # Suppress Streamlit file watcher and set log level before any imports
 import os
 os.environ["PYTORCH_JIT"] = "0"
@@ -49,18 +53,200 @@ import time
 import re
 import socket
 import ssl
+import mimetypes
 import markdownify
+import subprocess
+
+def update_progress(message):
+    if 'progress_history' in st.session_state:
+        st.session_state.progress_history.insert(0, message)
+        st.session_state.progress_history.insert(1, '-'*39 + '\n')
+
+def detect_file_type(file_data, file_meta=None):
+    """Detect file type from content using file signatures and MIME types"""
+    
+    try:
+        # First, try to get MIME type from Google Drive metadata
+        if file_meta and 'mimeType' in file_meta:
+            return file_meta['mimeType']
+        
+        # For local files or when metadata is not available, use file signatures
+        if isinstance(file_data, str):  # Local file path
+            # Use mimetypes for local files
+            mime_type, _ = mimetypes.guess_type(file_data)
+            return mime_type
+        else:  # BytesIO object
+            # Read first few bytes to detect file signature
+            file_bytes = file_data.getvalue()
+            file_data.seek(0)  # Reset position
+            
+            # File signature detection
+            if len(file_bytes) >= 4:
+                # PDF signature: %PDF
+                if file_bytes[:4] == b'%PDF':
+                    return 'application/pdf'
+                
+                # PNG signature: \x89PNG\r\n\x1a\n
+                if file_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+                    return 'image/png'
+                
+                # JPEG signature: \xff\xd8\xff
+                if file_bytes[:3] == b'\xff\xd8\xff':
+                    return 'image/jpeg'
+                
+                # MP3 signature: ID3 or \xff\xfb or \xff\xf3 or \xff\xf2
+                if (file_bytes[:3] == b'ID3' or 
+                    file_bytes[:2] in [b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'] or
+                    (len(file_bytes) >= 10 and file_bytes[:10] == b'ID3')):
+                    return 'audio/mpeg'
+                
+                # WAV signature: RIFF....WAVE
+                if file_bytes[:4] == b'RIFF' and file_bytes[8:12] == b'WAVE':
+                    return 'audio/wav'
+                
+                # Video format detection (more comprehensive)
+                # MP4 signature: ftyp
+                if file_bytes[:4] == b'ftyp':
+                    # Check for specific MP4 types
+                    if len(file_bytes) >= 8:
+                        ftyp_data = file_bytes[4:8]
+                        if b'mp4' in ftyp_data or b'M4V' in ftyp_data or b'isom' in ftyp_data:
+                            return 'video/mp4'
+                        elif b'M4A' in ftyp_data:
+                            return 'audio/mp4'
+                        else:
+                            # Generic ftyp - could be video or audio
+                            return 'video/mp4'  # Default to video
+                
+                # AVI signature: RIFF....AVI
+                if file_bytes[:4] == b'RIFF' and file_bytes[8:12] == b'AVI ':
+                    return 'video/avi'
+                
+                # MOV signature: ftyp (same as MP4 but different container)
+                if file_bytes[:4] == b'ftyp':
+                    return 'video/quicktime'
+                
+                # Additional video format detection
+                # WebM signature: \x1a\x45\xdf\xa3
+                if file_bytes[:4] == b'\x1a\x45\xdf\xa3':
+                    return 'video/webm'
+                
+                # FLV signature: FLV
+                if file_bytes[:3] == b'FLV':
+                    return 'video/x-flv'
+                
+                # MKV signature: \x1a\x45\xdf\xa3 (same as WebM)
+                if file_bytes[:4] == b'\x1a\x45\xdf\xa3':
+                    return 'video/x-matroska'
+                
+                # 3GP signature: ftyp
+                if file_bytes[:4] == b'ftyp' and len(file_bytes) >= 8:
+                    if b'3gp' in file_bytes[4:8]:
+                        return 'video/3gpp'
+                
+                # DOCX signature: PK\x03\x04 (ZIP format)
+                if file_bytes[:4] == b'PK\x03\x04':
+                    return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                
+                # PPTX signature: PK\x03\x04 (ZIP format)
+                if file_bytes[:4] == b'PK\x03\x04':
+                    return 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                
+                # Additional audio format detection
+                # OGG signature: OggS
+                if file_bytes[:4] == b'OggS':
+                    return 'audio/ogg'
+                
+                # FLAC signature: fLaC
+                if file_bytes[:4] == b'fLaC':
+                    return 'audio/flac'
+                
+                # AAC signature: ADIF or ADTS
+                if file_bytes[:4] == b'ADIF' or file_bytes[:2] == b'\xff\xf1':
+                    return 'audio/aac'
+            
+            # Try to detect text files
+            try:
+                text_content = file_bytes.decode('utf-8', errors='ignore')
+                if text_content.isprintable() and len(text_content) > 0:
+                    return 'text/plain'
+            except:
+                pass
+                
+        return None
+    except Exception as e:
+        update_progress(f"Error detecting file type: {str(e)}")
+        return None
+
+def get_file_type(file_data, file_meta=None, file_name=None):
+    """Get file type using MIME detection first, then extension fallback"""
+    
+    # 1. Try MIME detection first (most reliable)
+    detected_mime = detect_file_type(file_data, file_meta)
+    # update_progress(f"File type detection for '{file_name}': MIME={detected_mime}")
+    
+    # 2. If MIME detection works, use it
+    if detected_mime:
+        mime_to_extension = {
+            'text/plain': '.txt',
+            'application/pdf': '.pdf',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+            'application/msword': '.doc',
+            'audio/mpeg': '.mp3',
+            'audio/wav': '.wav',
+            'audio/ogg': '.ogg',
+            'audio/flac': '.flac',
+            'audio/aac': '.aac',
+            'audio/mp4': '.m4a',
+            'video/mp4': '.mp4',
+            'video/avi': '.avi',
+            'video/quicktime': '.mov',
+            'video/webm': '.webm',
+            'video/x-flv': '.flv',
+            'video/x-matroska': '.mkv',
+            'video/3gpp': '.3gp',
+            'image/jpeg': '.jpg',
+            'image/png': '.png',
+            'application/vnd.ms-powerpoint': '.ppt',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx'
+        }
+        if detected_mime in mime_to_extension:
+            # update_progress(f"Detected MIME type: {detected_mime} for file '{file_name}'")
+            return mime_to_extension[detected_mime], detected_mime
+    
+    # 3. Fallback to extension-based detection
+    if file_name:
+        file_extension = os.path.splitext(file_name)[1].lower()
+        if file_extension in ['.txt', '.pdf', '.docx', '.doc', '.mp3', '.mp4', '.wav', '.avi', '.mov', '.jpg', '.jpeg', '.png', '.ppt', '.pptx', '.ogg', '.flac', '.aac', '.m4a', '.webm', '.flv', '.mkv', '.3gp']:
+            return file_extension, None
+    
+    # 4. For files without extension, try to guess based on MIME type or file content
+    if detected_mime:
+        # If we have a MIME type but no extension mapping, try to infer
+        if 'video' in detected_mime:
+            #update_progress(f"Inferring video file type from MIME '{detected_mime}' for '{file_name}'")
+            return '.mp4', detected_mime  # Default to mp4 for video files
+        elif 'audio' in detected_mime:
+            #update_progress(f"Inferring audio file type from MIME '{detected_mime}' for '{file_name}'")
+            return '.mp3', detected_mime  # Default to mp3 for audio files
+        elif 'image' in detected_mime:
+            #update_progress(f"Inferring image file type from MIME '{detected_mime}' for '{file_name}'")
+            return '.jpg', detected_mime  # Default to jpg for image files
+    
+    update_progress(f"Could not determine file type for '{file_name}' (MIME: {detected_mime})")
+    return None, detected_mime
 
 def import_media_libs():
-    """Lazy import for ffmpeg and whisper to improve startup time. Ensures ffmpeg is imported after FFMPEG_BINARY is set."""
+    """Lazy import for ffmpeg, whisper, and resampy to improve startup time. Ensures ffmpeg is imported after FFMPEG_BINARY is set."""
     try:
         import importlib
         ffmpeg = importlib.import_module("ffmpeg")
         whisper = importlib.import_module("whisper")
-        return ffmpeg, whisper
+        resampy = importlib.import_module("resampy")
+        return ffmpeg, whisper, resampy
     except ImportError as e:
         update_progress(f"Error importing media libraries: {str(e)}")
-        return None, None
+        return None, None, None
     
 thread_pool = ThreadPoolExecutor() # Initialize thread pool for async operations
 
@@ -103,11 +289,6 @@ def run_async(func):
         
         return loop.run_until_complete(func(*args, **kwargs))
     return wrapper
-
-def update_progress(message):
-    if 'progress_history' in st.session_state:
-        st.session_state.progress_history.insert(0, message)
-        st.session_state.progress_history.insert(1, '-'*39 + '\n')
 
 # Set up Google API credentials
 def setup_google_api():
@@ -261,60 +442,183 @@ def ensure_ffmpeg_binary():
     if ffmpeg_path:
         return ffmpeg_path
     
-    # If not, download static binary (Linux x86_64 for Streamlit Cloud)
+    # If not, download static binary
     system = platform.system().lower()
     temp_dir = os.path.join(tempfile.gettempdir(), "ffmpeg-bin")
     os.makedirs(temp_dir, exist_ok=True)
     ffmpeg_bin = os.path.join(temp_dir, "ffmpeg")
+    
     if system == "windows":
         ffmpeg_bin += ".exe"
         url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
         zip_path = os.path.join(temp_dir, "ffmpeg.zip")
+        
         if not os.path.exists(ffmpeg_bin):
-            urllib.request.urlretrieve(url, zip_path)
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                for member in zip_ref.namelist():
-                    if member.endswith("ffmpeg.exe"):
-                        zip_ref.extract(member, temp_dir)
-                        src = os.path.join(temp_dir, member)
-                        shutil.move(src, ffmpeg_bin)
-            os.remove(zip_path)
+            try:
+                # update_progress(f"Downloading FFmpeg for Windows from {url}")
+                urllib.request.urlretrieve(url, zip_path)                
+                # update_progress("Extracting FFmpeg from zip file...")
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    # Find the ffmpeg.exe file in the zip
+                    ffmpeg_files = [f for f in zip_ref.namelist() if f.endswith("ffmpeg.exe")]
+                    if ffmpeg_files:
+                        # Extract the first ffmpeg.exe found
+                        zip_ref.extract(ffmpeg_files[0], temp_dir)
+                        # The extracted file might be in a subdirectory
+                        extracted_path = os.path.join(temp_dir, ffmpeg_files[0])
+                        if os.path.exists(extracted_path):
+                            shutil.move(extracted_path, ffmpeg_bin)
+                            # update_progress(f"FFmpeg extracted to: {ffmpeg_bin}")
+                        # else: update_progress(f"Failed to find extracted FFmpeg at: {extracted_path}")
+                    # else: update_progress("No ffmpeg.exe found in downloaded zip file")                        
+                os.remove(zip_path)
+            except Exception as e:
+                # update_progress(f"Error downloading/extracting FFmpeg: {str(e)}")
+                return None
     else:
         # Assume Linux x86_64 (for Streamlit Cloud)
         url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
         tar_path = os.path.join(temp_dir, "ffmpeg.tar.xz")
+        
         if not os.path.exists(ffmpeg_bin):
-            urllib.request.urlretrieve(url, tar_path)
-            with tarfile.open(tar_path, 'r:xz') as tar_ref:
-                for member in tar_ref.getmembers():
-                    if member.isfile() and member.name.endswith("/ffmpeg"):
-                        tar_ref.extract(member, temp_dir)
-                        src = os.path.join(temp_dir, member.name)
-                        shutil.move(src, ffmpeg_bin)
-                        os.chmod(ffmpeg_bin, os.stat(ffmpeg_bin).st_mode | stat.S_IEXEC)
-            os.remove(tar_path)
+            try:
+                # update_progress(f"Downloading FFmpeg for Linux from {url}")
+                urllib.request.urlretrieve(url, tar_path)                
+                #update_progress("Extracting FFmpeg from tar file...")
+                with tarfile.open(tar_path, 'r:xz') as tar_ref:
+                    for member in tar_ref.getmembers():
+                        if member.isfile() and member.name.endswith("/ffmpeg"):
+                            tar_ref.extract(member, temp_dir)
+                            src = os.path.join(temp_dir, member.name)
+                            shutil.move(src, ffmpeg_bin)
+                            os.chmod(ffmpeg_bin, os.stat(ffmpeg_bin).st_mode | stat.S_IEXEC)
+                            # update_progress(f"FFmpeg extracted to: {ffmpeg_bin}")
+                            break
+                os.remove(tar_path)
+            except Exception as e:
+                #update_progress(f"Error downloading/extracting FFmpeg: {str(e)}")
+                return None
+    
     if os.path.exists(ffmpeg_bin):
-        return ffmpeg_bin
+        # Test if the binary is executable
+        try:
+            if system == "windows":
+                # On Windows, just check if file exists and has .exe extension
+                if ffmpeg_bin.endswith('.exe'):
+                    # update_progress(f"FFmpeg binary ready: {ffmpeg_bin}")
+                    return ffmpeg_bin
+            else:
+                # On Linux, check if executable
+                if os.access(ffmpeg_bin, os.X_OK):
+                    #update_progress(f"FFmpeg binary ready: {ffmpeg_bin}")
+                    return ffmpeg_bin
+        except Exception as e:
+            update_progress(f"Error testing FFmpeg binary: {str(e)}")    
+    # update_progress("FFmpeg binary not available")
     return None
 
 def convert_video_to_audio(video_file):
     try:
+        # Verify the input file exists
+        if not os.path.exists(video_file):
+            update_progress(f"Video file does not exist: {video_file}")
+            return None
+        
+        file_size = os.path.getsize(video_file)
+        if file_size == 0:
+            update_progress(f"Video file is empty: {video_file}")
+            return None
+            
+        #update_progress(f"Processing video file: {video_file} (size: {file_size} bytes)")
+        
         ffmpeg_bin = ensure_ffmpeg_binary()
         if ffmpeg_bin:
-            # On Windows, add ffmpeg-bin directory to PATH so ffmpeg-python can find it
+            # Set FFMPEG_BINARY environment variable for ffmpeg-python
+            os.environ["FFMPEG_BINARY"] = ffmpeg_bin
+            # Also add to PATH for compatibility
             ffmpeg_dir = os.path.dirname(ffmpeg_bin)
             if ffmpeg_dir not in os.environ["PATH"]:
-                os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
-            # update_progress(f"Using FFmpeg binary at: {ffmpeg_bin}")
-        ffmpeg, _ = import_media_libs() # Import after env var set
-        audio_stream = ffmpeg.input(video_file).audio
-        audio_buffer = io.BytesIO()
-        audio_stream = audio_stream.output('pipe:', format='wav', acodec='pcm_s16le', ac=1, ar=16000, loglevel='error')
-        out, _ = audio_stream.run(capture_stdout=True, capture_stderr=True)
-        audio_buffer.write(out)
-        audio_buffer.seek(0)
-        update_progress(f"Successfully converted {video_file} to audio stream")
-        return audio_buffer
+                os.environ["PATH"] = ffmpeg_dir + os.path.sep + os.environ["PATH"]
+            #update_progress(f"Using FFmpeg binary at: {ffmpeg_bin}")
+        else:
+            update_progress("FFmpeg binary not found, trying system FFmpeg")
+            
+        ffmpeg, _, _ = import_media_libs() # Import after env var set
+        if ffmpeg is None:
+            update_progress("Failed to import ffmpeg library")
+            return None
+            
+        #update_progress(f"Starting video to audio conversion...")
+        
+        # Use explicit ffmpeg binary path if available
+        if ffmpeg_bin:
+            try:
+                # Try using the binary directly with subprocess as fallback                                
+                # Create temporary output file
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_output:
+                    temp_output_path = temp_output.name
+                
+                #update_progress(f"Using subprocess approach with binary: {ffmpeg_bin}")
+                #update_progress(f"Input file: {video_file}")
+                #update_progress(f"Output file: {temp_output_path}")
+                
+                # Run ffmpeg command directly
+                cmd = [
+                    ffmpeg_bin,
+                    '-i', video_file,
+                    '-f', 'wav',
+                    '-acodec', 'pcm_s16le',
+                    '-ac', '1',
+                    '-ar', '16000',
+                    '-y',  # Overwrite output file
+                    temp_output_path
+                ]
+                
+                #update_progress(f"Running command: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                
+                #update_progress(f"Subprocess return code: {result.returncode}")
+                #if result.stderr:
+                #    update_progress(f"Subprocess stderr: {result.stderr}")
+                #if result.stdout:
+                #    update_progress(f"Subprocess stdout: {result.stdout}")
+                
+                if result.returncode == 0 and os.path.exists(temp_output_path):
+                    # Read the output file
+                    with open(temp_output_path, 'rb') as f:
+                        audio_buffer = io.BytesIO(f.read())
+                    audio_buffer.seek(0)
+                    
+                    # Clean up temp file
+                    os.unlink(temp_output_path)
+                    
+                    #update_progress(f"Successfully converted {video_file} to audio stream (size: {len(audio_buffer.getvalue())} bytes)")
+                    return audio_buffer
+                else:
+                    update_progress(f"FFmpeg subprocess failed: {result.stderr}")
+                    if os.path.exists(temp_output_path):
+                        os.unlink(temp_output_path)
+                    
+            except Exception as subprocess_error:
+                update_progress(f"Subprocess approach failed: {str(subprocess_error)}")
+                # Fall back to ffmpeg-python
+                pass
+        
+        # Fallback to ffmpeg-python approach
+        try:
+            #update_progress("Trying ffmpeg-python approach...")
+            audio_stream = ffmpeg.input(video_file).audio
+            audio_buffer = io.BytesIO()
+            audio_stream = audio_stream.output('pipe:', format='wav', acodec='pcm_s16le', ac=1, ar=16000, loglevel='error')
+            out, _ = audio_stream.run(capture_stdout=True, capture_stderr=True)
+            audio_buffer.write(out)
+            audio_buffer.seek(0)
+            #update_progress(f"Successfully converted {video_file} to audio stream (size: {len(audio_buffer.getvalue())} bytes)")
+            return audio_buffer
+        except Exception as ffmpeg_python_error:
+            update_progress(f"FFmpeg-python approach failed: {str(ffmpeg_python_error)}")
+            return None
+            
     except Exception as e:
         update_progress(f"FFmpeg error: {str(e)}")
         return None
@@ -337,6 +641,13 @@ def extract_content(file_data, file_meta=None):
         file_path = None
         is_memory_file = True
 
+    # Get file type using hybrid approach
+    file_type, detected_mime = get_file_type(file_data, file_meta, file_name)
+    
+    if not file_type:
+        update_progress(f"Unsupported file format for: '{file_name}' (detected MIME: {detected_mime})")
+        return file_content_list
+
     try:
         # Special handling: if file is a Google Doc, treat as docx
         if file_meta and file_meta.get('mimeType', '') == 'application/vnd.google-apps.document':
@@ -346,51 +657,89 @@ def extract_content(file_data, file_meta=None):
                     text = paragraph.text.strip()
                     if text:
                         file_content_list.append({"text": text})
-                        update_progress(f"Content extracted successfully from '{file_name}' (Google Doc)")
+                        # update_progress(f"Content extracted successfully from '{file_name}' (Google Doc)")
                 doc = None
             except Exception as e:
                 update_progress(f"Error processing Google Doc '{file_name}' due to: {str(e)}")
             return file_content_list
         
-        if file_name.lower().endswith((".mp4", ".avi", ".mov", ".mp3", ".wav")): # Handle media files
-            _, whisper = import_media_libs()  # Get whisper from lazy import
-            if file_name.lower().endswith((".mp4", ".avi", ".mov")): # Convert video to audio
+        # Handle media files (video and audio)
+        if file_type in ['.mp4', '.avi', '.mov', '.webm', '.flv', '.mkv', '.3gp', '.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a']:
+            _, whisper, resampy = import_media_libs()  # Get whisper and resampy from lazy import
+            if file_type in ['.mp4', '.avi', '.mov', '.webm', '.flv', '.mkv', '.3gp']: # Convert video to audio
                 try:
-                    # update_progress(f"Converting video to audio for {file_name}...")                    
                     if is_memory_file:
                         # For memory file, write to temporary file just for ffmpeg
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file_name)[1]) as tmp:
-                            tmp.write(file_data.getvalue())
-                            temp_video = tmp.name                        
+                        # update_progress(f"Creating temporary file for video processing: {file_name}")
+                        
+                        # Use a more reliable temporary file creation
+                        temp_dir = tempfile.gettempdir()
+                        temp_filename = f"video_{hash(file_name)}_{int(time.time())}{file_type}"
+                        temp_video = os.path.join(temp_dir, temp_filename)
+                        
                         try:
-                            audio_source = convert_video_to_audio(temp_video)
-                        finally:
-                            os.unlink(temp_video)
+                            with open(temp_video, 'wb') as tmp:
+                                file_bytes = file_data.getvalue()
+                                tmp.write(file_bytes)
+                                tmp.flush()  # Ensure data is written
+                                os.fsync(tmp.fileno())  # Force sync to disk
+                            
+                            #update_progress(f"Temporary file created: {temp_video} (size: {len(file_bytes)} bytes)")
+                            
+                            # Verify the temporary file exists and has content
+                            if os.path.exists(temp_video):
+                                actual_size = os.path.getsize(temp_video)
+                                # update_progress(f"Temporary file verified: {temp_video} (actual size: {actual_size} bytes)")
+                                
+                                if actual_size > 0:
+                                    #update_progress(f"Converting video to audio: {temp_video}")
+                                    audio_source = convert_video_to_audio(temp_video)
+                                else:
+                                    #update_progress(f"Temporary file is empty: {temp_video}")
+                                    audio_source = None
+                            else:
+                                #update_progress(f"Temporary file does not exist after creation: {temp_video}")
+                                audio_source = None
+                                
+                        except Exception as write_error:
+                            update_progress(f"Error writing temporary file: {str(write_error)}")
+                            audio_source = None
+                        
+                        # Clean up temporary file AFTER processing
+                        try:
+                            if os.path.exists(temp_video):
+                                os.unlink(temp_video)
+                                # update_progress(f"Cleaned up temporary file: {temp_video}")
+                        except Exception as cleanup_error:
+                            update_progress(f"Error cleaning up temporary file: {str(cleanup_error)}")
                     else:
-                        audio_source = convert_video_to_audio(file_path)                        
+                        # update_progress(f"Converting video to audio: {file_path}")
+                        audio_source = convert_video_to_audio(file_path)
+                        
+                    if audio_source is None:
+                        update_progress(f"Video to audio conversion failed for '{file_name}'")
+                        return file_content_list
+                        
                 except Exception as e:
                     update_progress(f"Error converting video to audio: {e}\n")
-                    return
+                    return file_content_list
             else: # For audio files 
                 if is_memory_file:
                     audio_source = io.BytesIO(file_data.getvalue())
                     audio_source.seek(0) 
-                    # update_progress(f"BytesIO buffer size: {len(audio_source.getvalue())} bytes")  
                 else: # For local files, use the file path directly
-                    audio_source = file_path # Need to change this code                       
+                    audio_source = file_path                       
             try: # Process audio content
                 audio_data, sample_rate = sf.read(audio_source)                                                    
                 if audio_data is None:
                     update_progress(f"Failed to read audio data from '{file_name}'")
-                # else: update_progress(f"Audio read successfully: {audio_data.shape} samples @ {sample_rate}Hz")
+                    return file_content_list
                 if len(audio_data.shape) > 1:  # If stereo, convert to mono
                     audio_data = audio_data.mean(axis=1)
      
                 # Ensure sample rate is 16000 Hz (Whisper expects 16kHz)
                 if sample_rate != 16000:
                     try:
-                            import resampy
-                            # update_progress(f"Resampling from {sample_rate}Hz to 16000Hz...")                            
                             # Add padding if needed for very short audio
                             if len(audio_data) < sample_rate // 100:  # Less than 10ms
                                 pad_length = sample_rate // 100 - len(audio_data)
@@ -400,7 +749,7 @@ def extract_content(file_data, file_meta=None):
                             sample_rate = 16000
                             
                             if len(audio_data) < 1:
-                                update_progress(f"Resampling resulted in empty audio for {file_name}")
+                                # update_progress(f"Resampling resulted in empty audio for {file_name}")
                                 return file_content_list
                                 
                     except Exception as e:
@@ -414,25 +763,26 @@ def extract_content(file_data, file_meta=None):
                     torch.set_grad_enabled(False)
                     result = model.transcribe(
                         audio_data,
-                        fp16=False if device.type == 'cpu' else True  # language='en' 
+                        fp16=False if device.type == 'cpu' else True
                     ) 
-                # model.transcribe(audio_source, word_timestamps=True)    
-                update_progress(f"Transcription is completed for '{file_name}'.\n")
+                # update_progress(f"Transcription is completed for '{file_name}'.\n")
                 plain_transcript = result["text"].strip() # Plain transcript
                 file_content_list.append({"text": plain_transcript}) # Plain transcript
-                update_progress(f"Content extracted successfully from '{file_name}'")
+                #update_progress(f"Content extracted successfully from '{file_name}'")
                 timestamped_transcript = [] # Create timestamped transcript
                 for segment in result["segments"]:
                     start_time = str(datetime.timedelta(seconds=round(segment["start"])))
                     text = segment["text"].strip()
                     timestamped_transcript.append(f"[{start_time}] {text}")    
-                update_progress(f"Successfully processed audio file: {file_name}")                                
+                #update_progress(f"Successfully processed video/audio file: {file_name}")                                
             except Exception as e:
-                update_progress(f"Error processing audio file '{file_name}': {str(e)}")
+                update_progress(f"Error processing video/audio file '{file_name}': {str(e)}")
+                return file_content_list
             if isinstance(audio_source, io.BytesIO): # Not required
                 audio_source.close()
 
-        elif file_name.lower().endswith((".jpg", ".jpeg", ".png")): # Handle images
+        # Handle images
+        elif file_type in ['.jpg', '.jpeg', '.png']:
             try:  # Open image from memory or file
                 if is_memory_file:
                     image = Image.open(file_data)
@@ -447,10 +797,10 @@ def extract_content(file_data, file_meta=None):
                 rgb_image.save(buffered, format="JPEG")
                 image_data = buffered.getvalue()                
                 mime_type = "image/jpeg"
-                if file_name.lower().endswith(".png"):
+                if file_type == '.png':
                     mime_type = "image/png"                
                 file_content_list.append({"mime_type": mime_type, "data": image_data})  
-                update_progress(f"Content extracted successfully from '{file_name}'")              
+                #update_progress(f"Content extracted successfully from '{file_name}'")              
                 # Clean up
                 image.close()
                 rgb_image.close()
@@ -459,7 +809,8 @@ def extract_content(file_data, file_meta=None):
             except Exception as e:
                 update_progress(f"Error processing image '{file_name}' due to: {str(e)}")
     
-        elif file_name.lower().endswith(".pdf"): # Handle PDFs
+        # Handle PDFs
+        elif file_type == '.pdf':
             try:
                 if is_memory_file: # Load PDF from memory
                     doc = fitz.open(stream=file_data.getvalue(), filetype="pdf")
@@ -470,12 +821,13 @@ def extract_content(file_data, file_meta=None):
                     text = page.get_text().strip()
                     if text:
                         file_content_list.append({"text": text})
-                        update_progress(f"Content extracted successfully from '{file_name}'")
+                        # update_progress(f"Content extracted successfully from '{file_name}'")
                 doc.close()                
             except Exception as e:
                 update_progress(f"Error processing PDF '{file_name}' due to: {str(e)}")
         
-        elif file_name.lower().endswith(('.doc', '.docx')): # Handle Word documents
+        # Handle Word documents
+        elif file_type in ['.doc', '.docx']:
             try:
                 if is_memory_file:
                     doc = docx.Document(file_data)
@@ -485,12 +837,13 @@ def extract_content(file_data, file_meta=None):
                     text = paragraph.text.strip()
                     if text:
                         file_content_list.append({"text": text})
-                        update_progress(f"Content extracted successfully from '{file_name}'")
+                        # update_progress(f"Content extracted successfully from '{file_name}'")
                 doc = None                
             except Exception as e:
                 update_progress(f"Error processing Word document '{file_name}' due to: {str(e)}")
         
-        elif file_name.lower().endswith('.txt'): # Handle text files
+        # Handle text files
+        elif file_type == '.txt':
             try:
                 if is_memory_file:
                     content = file_data.getvalue().decode('utf-8').strip()
@@ -499,14 +852,12 @@ def extract_content(file_data, file_meta=None):
                         content = f.read().strip()                
                 if content:
                     file_content_list.append({"text": content})
-                    update_progress(f"Content extracted successfully from '{file_name}'")
-                # else:
-                #    update_progress(f"No content found in {file_name}")                    
+                    # update_progress(f"Content extracted successfully from '{file_name}'")
             except Exception as e:
                 update_progress(f"Error processing text file '{file_name}' due to: {str(e)}")
 
-        # Handle PowerPoint files (.ppt, .pptx)
-        elif file_name.lower().endswith(('.ppt', '.pptx')):
+        # Handle PowerPoint files
+        elif file_type in ['.ppt', '.pptx']:
             try:
                 if is_memory_file:
                     ppt = pptx.Presentation(file_data)
@@ -521,13 +872,87 @@ def extract_content(file_data, file_meta=None):
                                 slide_text.append(text)
                     if slide_text:
                         file_content_list.append({"text": f"[Slide {slide_num}] " + "\n".join(slide_text)})
-                update_progress(f"Content extracted successfully from PowerPoint '{file_name}'")
+                #update_progress(f"Content extracted successfully from PowerPoint '{file_name}'")
             except Exception as e:
                 update_progress(f"Error processing PowerPoint file '{file_name}' due to: {str(e)}")
             return file_content_list        
         else:
             update_progress(f"Unsupported file format for: '{file_name}'")        
-        return file_content_list        
+            
+        # Fallback: If no file type was detected but the file might be audio/video, try to process it
+        if not file_content_list and detected_mime and ('audio' in detected_mime or 'video' in detected_mime):
+            # update_progress(f"Attempting to process '{file_name}' as media file (MIME: {detected_mime})")
+            try:
+                _, whisper, resampy = import_media_libs()
+                
+                # For video files, convert to audio first
+                if 'video' in detected_mime:
+                    if is_memory_file:
+                        # Create temporary file with appropriate extension
+                        temp_dir = tempfile.gettempdir()
+                        temp_filename = f"video_{hash(file_name)}_{int(time.time())}.mp4"
+                        temp_video = os.path.join(temp_dir, temp_filename)
+                        
+                        try:
+                            with open(temp_video, 'wb') as tmp:
+                                file_bytes = file_data.getvalue()
+                                tmp.write(file_bytes)
+                                tmp.flush()
+                                os.fsync(tmp.fileno())
+                            
+                            #update_progress(f"Created temporary video file: {temp_video}")
+                            audio_source = convert_video_to_audio(temp_video)
+                            
+                            # Clean up
+                            if os.path.exists(temp_video):
+                                os.unlink(temp_video)
+                        except Exception as e:
+                            update_progress(f"Error creating temporary video file: {str(e)}")
+                            audio_source = None
+                    else:
+                        audio_source = convert_video_to_audio(file_path)
+                else:
+                    # For audio files, use directly
+                    if is_memory_file:
+                        audio_source = io.BytesIO(file_data.getvalue())
+                        audio_source.seek(0)
+                    else:
+                        audio_source = file_path
+                
+                if audio_source is None:
+                    update_progress(f"Failed to convert video to audio for '{file_name}'")
+                    return file_content_list
+                
+                audio_data, sample_rate = sf.read(audio_source)
+                if audio_data is not None:
+                    if len(audio_data.shape) > 1:
+                        audio_data = audio_data.mean(axis=1)
+                    
+                    # Resample if needed
+                    if sample_rate != 16000:
+                        try:
+                            audio_data = resampy.resample(audio_data, sample_rate, 16000)
+                            sample_rate = 16000
+                        except Exception as e:
+                            update_progress(f"Resampling failed: {str(e)}")
+                            return file_content_list
+                    
+                    audio_data = audio_data.astype(np.float32)
+                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                    model = whisper.load_model("base").to(device)
+                    with torch.inference_mode():
+                        torch.set_grad_enabled(False)
+                        result = model.transcribe(audio_data, fp16=False if device.type == 'cpu' else True)
+                    
+                    plain_transcript = result["text"].strip()
+                    file_content_list.append({"text": plain_transcript})
+                    # update_progress(f"Successfully processed '{file_name}' as media file")
+                else:
+                    update_progress(f"Failed to read audio data from '{file_name}'")
+            except Exception as e:
+                update_progress(f"Error processing '{file_name}' as media: {str(e)}")
+        
+        return file_content_list
     except Exception as e:
         update_progress(f"Error processing '{file_name}' due to: {str(e)}")
         return []
@@ -642,8 +1067,7 @@ def save_story_to_google_drive():
                 else:
                     st.session_state.save_action = 'save'
 
-            if st.session_state.save_action in ['save', 'save_with_timestamp']: 
-                import datetime
+            if st.session_state.save_action in ['save', 'save_with_timestamp']:                 
                 if st.session_state.save_action == 'save_with_timestamp':
                     unique_suffix = datetime.datetime.now().strftime("_%Y%m%d_%H%M%S")
                 else: 
