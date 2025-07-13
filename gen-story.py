@@ -1418,16 +1418,28 @@ def google_drive_browser():
             all_file_ids = [file['id'] for file in regular_files]
             checked_file_ids = [fid for fid in all_file_ids if st.session_state.get(f"check_{fid}", False)]
             all_selected = len(regular_files) > 0 and len(checked_file_ids) == len(regular_files)
+            
+            # Track previous state to detect changes
+            if 'previous_select_all_state' not in st.session_state:
+                st.session_state.previous_select_all_state = all_selected
+            
             select_all = st.checkbox("**Select All Files**", 
                 value=all_selected,
                 key="select_all_files_in_folder", 
                 help="Click to select all following files in the current folder")
-            if select_all and not all_selected:
+            
+            # Handle select all checkbox changes
+            if select_all and not st.session_state.previous_select_all_state:
+                # Select all files when checkbox is checked
                 for file in regular_files:
                     st.session_state[f"check_{file['id']}"] = True
-            elif not select_all and all_selected:
+            elif not select_all and st.session_state.previous_select_all_state:
+                # Deselect all files when checkbox is unchecked
                 for file in regular_files:
-                    st.session_state[f"check_{file['id']}"] = False    
+                    st.session_state[f"check_{file['id']}"] = False
+            
+            # Update previous state
+            st.session_state.previous_select_all_state = select_all
             # If html file is selected, update checkbox states before rendering
             # if 'selected_html_file_id' in st.session_state:
             #    for f in regular_files:
@@ -1604,7 +1616,8 @@ async def main():
             """, unsafe_allow_html=True)
         st.markdown("<font color='darkblue'><b><p style='font-size: 16px; text-align: center; '>CSTU Startup Center</p></b></font>", unsafe_allow_html=True)
         st.markdown("<font color='darkblue'><b><p style='font-size: 20px; text-align: center; '>GENERATE CUPERTINO STORIES</p></b></font>", unsafe_allow_html=True)
-        st.markdown("---")
+        st.markdown('<a href="https://docs.google.com/document/d/1dJTJZ58kgweCsS9-lYSRgIRUc160TDnk" target="_blank" title="Click to open the user guide in a new tab" style="display:block; text-align:center; color:darkblue; ">User Guide</a>', unsafe_allow_html=True)
+        # st.markdown("---")
   
         #st.header("")
         source = st.radio(label="**Browse Files from:**", options=["Google Drive", "Local Drive"], help="Select source to browse files",)         
@@ -1652,7 +1665,7 @@ async def main():
 
     # Main content area - show story tabs
     if st.session_state.story_content: 
-        tabs = st.tabs(["👁️**STORY VIEWER**", "🤖📝**AI STORY EDITOR**", "📝**MANUAL STORY EDITOR**"])
+        tabs = st.tabs(["👁️**GENERATED STORY VIEWER**", "🤖📝**AI STORY EDITOR**", "📝**MANUAL STORY EDITOR**"])
         with tabs[0]:
             col_html, col_docx = st.columns(2)
             with col_html:
