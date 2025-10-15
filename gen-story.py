@@ -1189,7 +1189,7 @@ async def generate_story(file_content_list):
         response = await asyncio.to_thread(st.session_state.llm.generate_content, [prompt] + file_content_list)
         st.session_state.story_content = response.text #story_content_markdown               
         update_progress(f"Story generated from {selected_file_names}")                  
-        save_story_to_google_drive()
+        ### save_story_to_google_drive() Temporary remove for users
     except Exception as e:
         update_progress(f"Error generating story from {selected_file_names} due to: {str(e)}")
     finally:     
@@ -1305,10 +1305,10 @@ def list_google_drive_files(parent_id='root'):
     backoff = 2
     for attempt in range(max_retries):
         try:
-            # Simple query for all files and folders
-            query = f"'{parent_id}' in parents and trashed = false"
+            # Query to exclude Google Sheets files
+            query = f"'{parent_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.spreadsheet'"
             if parent_id == 'root':
-                query = "('root' in parents or sharedWithMe = true) and trashed = false"
+                query = "('root' in parents or sharedWithMe = true) and trashed = false and mimeType != 'application/vnd.google-apps.spreadsheet'"
             results = st.session_state.google_drive_service.files().list(
                 q=query,
                 fields="files(id, name, mimeType, size)",
@@ -1517,7 +1517,8 @@ def google_drive_browser():
                         st.rerun()
 
                 # Overwrite/Skip confirmation UI
-                if st.session_state.get('overwrite_confirm_needed', False):
+                ### Temporary remove for users
+                temp = """if st.session_state.get('overwrite_confirm_needed', False):
                     current_folder = st.session_state.drive_folder_history[-1]
                     story_folder_name = current_folder['name']
                     st.warning(f"Story files '{st.session_state.story_file_stem}.docx|html' already exist in '{st.session_state.generated_story_root_folder['name']}'/'{story_folder_name}'")
@@ -1547,7 +1548,7 @@ def google_drive_browser():
                             st.session_state.save_action = None
                             st.session_state.overwrite_confirm_needed = False
                             update_progress(f"Skipped saving story file '{st.session_state.story_file_stem}'")
-                            st.rerun()
+                            st.rerun() """
                 # Delete confirmation UI
                 temp = """if "delete_confirm_needed" not in st.session_state:
                     st.session_state.delete_confirm_needed = False                
@@ -1614,6 +1615,8 @@ async def main():
             }
             </style>
             """, unsafe_allow_html=True)
+        
+        st.image("StoryGenIcon.png", width=300)
         st.markdown("<font color='darkblue'><b><p style='font-size: 16px; text-align: center; '>CSTU Startup Center</p></b></font>", unsafe_allow_html=True)
         st.markdown("<font color='darkblue'><b><p style='font-size: 20px; text-align: center; '>GENERATE CUPERTINO STORIES</p></b></font>", unsafe_allow_html=True)
         st.markdown('<a href="https://docs.google.com/document/d/1dJTJZ58kgweCsS9-lYSRgIRUc160TDnk" target="_blank" title="Click to open the user guide in a new tab" style="display:block; text-align:center; color:darkblue; ">User Guide</a>', unsafe_allow_html=True)
@@ -1733,7 +1736,7 @@ async def main():
             with col2: 
                 if st.button("💾**SAVE REVISED STORY**", help ="Click to save revised story"):        
                     try: 
-                        save_story_to_google_drive() 
+                        print("Save revised story clicked") ### save_story_to_google_drive() Temporary remove for users
                     except Exception as e:
                         st.error(f"Error saving revised story: {str(e)}") 
         with tabs[2]:
@@ -1761,7 +1764,7 @@ async def main():
                                 if key in edited_texts:
                                     tag.string.replace_with(edited_texts[key])
                         st.session_state.story_content = html2text.html2text(str(soup)) 
-                        save_story_to_google_drive() 
+                        ### save_story_to_google_drive() Temporary remove for users
                     except Exception as e:
                         st.error(f"Error saving changes: {str(e)}")
 if __name__ == "__main__":
