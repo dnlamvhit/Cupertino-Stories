@@ -11,6 +11,7 @@ nest_asyncio
 openai-whisper
 pandas
 pillow
+protobuf==3.20.1
 PyMuPDF
 python-docx
 python-dotenv
@@ -23,3 +24,4 @@ torchvision
 torchaudio
 requests>=2.31.0
 urllib3>=2.2.1
+
