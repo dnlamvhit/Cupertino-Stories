@@ -18,11 +18,12 @@ python-dotenv
 python-pptx
 resampy
 soundfile
-streamlit
+streamlit>=1.28.0
 torch
 torchvision
 torchaudio
 requests>=2.31.0
 urllib3>=2.2.1
+
 
 
